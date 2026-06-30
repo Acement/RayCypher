@@ -5,16 +5,8 @@ import ray
 import psutil
 from codecarbon import EmissionsTracker
 
-# Intentar importar la librería de NVIDIA para la GPU
-try:
-    import pynvml
-    pynvml.nvmlInit()
-    GPU_AVAILABLE = True
-except Exception:
-    GPU_AVAILABLE = False
-
 LEN_ALPHABET = 26
-REPETITION = 20
+REPETITION = 100
 NUM_CORES = 4
 
 # --- Clase para rastrear hardware y energía ---
@@ -28,7 +20,6 @@ class ResourceTracker:
         # Captura inicial de CPU (porcentaje) y memoria
         self.process.cpu_percent(interval=None) 
         self.start_mem = self.get_cluster_memory()
-        self.start_gpu = self.get_gpu_usage() if GPU_AVAILABLE else 0
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -38,7 +29,6 @@ class ResourceTracker:
         # Métrica promedio/pico al finalizar
         self.end_cpu = self.get_cluster_cpu()
         self.end_mem = self.get_cluster_memory()
-        self.end_gpu = self.get_gpu_usage() if GPU_AVAILABLE else 0
 
     def get_cluster_memory(self):
         # Mide la memoria del proceso padre + todos los workers hijos creados por Ray/Pool
@@ -60,24 +50,12 @@ class ResourceTracker:
                 continue
         return total_cpu / NUM_CORES # Normalizado por hilos asignados
 
-    def get_gpu_usage(self):
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            res = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            return res.gpu # Porcentaje de uso de la GPU
-        except Exception:
-            return 0
-
     def print_metrics(self, name, t_total, t_avg):
         print(f"[{name}]:")
         print(f"    Tiempo Total:       {t_total:.4f} s | Promedio: {t_avg:.4f} s")
-        print(f"    Energía consumida:  {self.end_energy:.6f} kWh")
+        print(f"    Energía consumida:  {(self.end_energy * 1000000):.6f} mWh")
         print(f"    Uso Estimado CPU:   {self.end_cpu:.1f} %")
-        print(f"    Memoria RAM RAM:    {self.end_mem:.2f} MB")
-        if GPU_AVAILABLE:
-            print(f"    Uso de GPU (NVIDIA): {self.end_gpu} %")
-        else:
-            print(f"    Uso de GPU:         N/A (No CUDA/NVIDIA detectada)")
+        print(f"    Memoria RAM:        {self.end_mem:.2f} MB")
         print("-" * 50)
 
 
@@ -114,7 +92,6 @@ def CDNormal(text, key, rep):
             else:
                 decypher_array.append((cypher_array[j] - key[key_count]) % LEN_ALPHABET)
                 key_count = (key_count + 1) % len(key)
-                
         total_time.append(time.time() - start)
     return sum(total_time), avgTime(total_time)
 
@@ -225,7 +202,6 @@ def CDRayNumpy(text, key, rep):
 
 # --- Bloque Principal ---
 if __name__ == "__main__":
-    ray.init(num_cpus=NUM_CORES, logging_level=50)
     
     if os.path.exists("text.txt"):
         with open("text.txt", "r") as f:
@@ -245,6 +221,8 @@ if __name__ == "__main__":
         t_total, t_avg = CDNormal(num_text, num_key, REPETITION)
     tracker.print_metrics("PYTHON PURO", t_total, t_avg)
 
+    ray.init(num_cpus=NUM_CORES, logging_level=50)
+
     # 2. Ray Solo
     with ResourceTracker() as tracker:
         t_total, t_avg = CDRaySolo(num_text, num_key, REPETITION)
@@ -257,5 +235,3 @@ if __name__ == "__main__":
     
     print("=" * 70)
     ray.shutdown()
-    if GPU_AVAILABLE:
-        pynvml.nvmlShutdown()
