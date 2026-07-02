@@ -9,20 +9,18 @@ import pynvml
 from codecarbon import EmissionsTracker
 
 LEN_ALPHABET = 26
-REPETITION = 5
+REPETITION = 20
 NUM_CORES = 4
 
-# --- Clase para rastrear hardware (CPU, RAM, GPU, VRAM) y energía ---
 class ResourceTracker:
     def __init__(self):
         self.emissions_tracker = EmissionsTracker(log_level='ERROR', save_to_file=False)
         self.process = psutil.Process(os.getpid())
         
-        # Inicializar NVML para métricas de GPU
         try:
             pynvml.nvmlInit()
             self.nvml_available = True
-            self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0) # Tomamos la GPU 0
+            self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         except Exception:
             self.nvml_available = False
         
@@ -35,13 +33,11 @@ class ResourceTracker:
         self.emissions_tracker.stop()
         self.end_energy = self.emissions_tracker.final_emissions_data.energy_consumed
         
-        # Captura de métricas finales
         self.end_cpu = self.get_cluster_cpu()
         self.end_mem = self.get_cluster_memory()
         
         if self.nvml_available:
             try:
-                # Obtener uso de GPU y memoria usada
                 util = pynvml.nvmlDeviceGetUtilizationRates(self.gpu_handle)
                 mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.gpu_handle)
                 self.end_gpu = util.gpu
@@ -75,26 +71,33 @@ class ResourceTracker:
                 continue
         return total_cpu / NUM_CORES
 
-    def get_metrics_dict(self, name, t_total, t_avg):
-        return {
-            "Ejecucion": name,
-            "Tiempo_Total_s": round(t_total, 4),
-            "Tiempo_Promedio_s": round(t_avg, 4),
-            "Energia_mWh": round(self.end_energy * 1000000, 6),
-            "Uso_CPU_Porcentaje": round(self.end_cpu, 1),
-            "RAM_MB": round(self.end_mem, 2),
-            "Uso_GPU_Porcentaje": round(self.end_gpu, 1),
-            "VRAM_MB": round(self.end_vram, 2)
-        }
+    def get_iteration_rows(self, name, time_list):
+        rows = []
+        for idx, t in enumerate(time_list):
+            rows.append({
+                "Ejecucion": name,
+                "Iteracion": idx + 1,
+                "Tiempo_s": round(t, 6),
+                "Energia_Wh": round(self.end_energy * 1000, 6),
+                "Uso_CPU_Porcentaje": round(self.end_cpu, 1),
+                "RAM_MB": round(self.end_mem, 2),
+                "Uso_GPU_Porcentaje": round(self.end_gpu, 1),
+                "VRAM_MB": round(self.end_vram, 2)
+            })
+        return rows
 
-    def print_metrics(self, metrics):
-        print(f"[{metrics['Ejecucion']}]:")
-        print(f"    Tiempo Total:       {metrics['Tiempo_Total_s']} s | Promedio: {metrics['Tiempo_Promedio_s']} s")
-        print(f"    Energía consumida:  {metrics['Energia_mWh']} mWh")
-        print(f"    Uso Estimado CPU:   {metrics['Uso_CPU_Porcentaje']} %")
-        print(f"    Memoria RAM:        {metrics['RAM_MB']} MB")
-        print(f"    Uso GPU:            {metrics['Uso_GPU_Porcentaje']} %")
-        print(f"    Memoria VRAM:       {metrics['VRAM_MB']} MB")
+    def print_summary_metrics(self, name, time_list):
+        t_total = sum(time_list)
+        t_avg = t_total / len(time_list) if time_list else 0
+        energia_mwh = self.end_energy * 1000000
+        
+        print(f"[{name}]:")
+        print(f"    Tiempo Total:       {round(t_total, 4)} s | Promedio: {round(t_avg, 4)} s")
+        print(f"    Energía consumida:  {round(energia_mwh, 6)} mWh")
+        print(f"    Uso Estimado CPU:   {round(self.end_cpu, 1)} %")
+        print(f"    Memoria RAM:        {round(self.end_mem, 2)} MB")
+        print(f"    Uso GPU:            {round(self.end_gpu, 1)} %")
+        print(f"    Memoria VRAM:       {round(self.end_vram, 2)} MB")
         print("-" * 50)
 
 
@@ -105,9 +108,6 @@ def toLowerCase(text):
 def textToNum(text):
     base = ord('a')
     return [ord(char) - base if char != ' ' else -65 for char in text]
-
-def avgTime(t_list):
-    return sum(t_list) / len(t_list) if t_list else 0
 
 
 # --- 1. Vigenère Puro ---
@@ -133,7 +133,7 @@ def CDNormal(text, key, rep):
                 decypher_array.append((cypher_array[j] - key[key_count]) % LEN_ALPHABET)
                 key_count = (key_count + 1) % len(key)
         total_time.append(time.time() - start)
-    return sum(total_time), avgTime(total_time)
+    return total_time
 
 
 # --- 2. Vigenère con Ray Puro + CPU ---
@@ -190,10 +190,10 @@ def CDRaySolo_CPU(text, key, rep):
             decypher_chunk_ray_CPU.remote(cypher_chunks[i], start_key_indices[i], key)
             for i in range(len(cypher_chunks))
         ]
-        decypher_results = ray.get(decypher_futures)
+        _ = ray.get(decypher_futures)
         
         total_time.append(time.time() - start)
-    return sum(total_time), avgTime(total_time)
+    return total_time
 
 
 # --- 3. Vigenère con Ray + NumPy + CPU ---
@@ -240,30 +240,25 @@ def CDRayNumpy_CPU(text, key, rep):
         _ = ray.get(decypher_futures)
         
         total_time.append(time.time() - start)
-    return sum(total_time), avgTime(total_time)
+    return total_time
 
 
 # --- 4.Vigenère con Ray + CuPy + GPU ---
 @ray.remote(num_gpus=1)
 def process_chunk_cupy_GPU(text_np, aligned_key, mask, mode="cypher"):
-    # Enviamos el arreglo completo directamente a la GPU
     text_cp = cp.asarray(text_np)
     key_cp = cp.asarray(aligned_key)
     mask_cp = cp.asarray(mask)
     
     result = text_cp.copy()
-    
     if mode == "cypher":
         result[mask_cp] = (text_cp[mask_cp] + key_cp[mask_cp]) % LEN_ALPHABET
     else:
         result[mask_cp] = (text_cp[mask_cp] - key_cp[mask_cp]) % LEN_ALPHABET
         
-    # Devolver el arreglo completo a la memoria CPU
     return cp.asnumpy(result)
 
-
 def CDRayCupy_GPU(text, key, rep):
-    # 1. Preparación de los arrays completos en NumPy (CPU)
     text_np = np.array(text, dtype=np.int32)
     key_np = np.array(key, dtype=np.int32)
     mask = (text_np != -65)
@@ -276,25 +271,21 @@ def CDRayCupy_GPU(text, key, rep):
     for _ in range(rep):
         start = time.time()
         
-        # Cifrado: Se envía TODO el bloque a un único Worker con GPU
         cypher_future = process_chunk_cupy_GPU.remote(text_np, aligned_key, mask, "cypher")
         cypher_np = ray.get(cypher_future)
         
-        # Descifrado: Se envía el resultado completo de vuelta a la GPU
         decypher_future = process_chunk_cupy_GPU.remote(cypher_np, aligned_key, mask, "decypher")
         _ = ray.get(decypher_future)
         
         total_time.append(time.time() - start)
-        
-    return sum(total_time), avgTime(total_time)
+    return total_time
 
 
-# --- Bloque Principal ---
 if __name__ == "__main__":
-    
     if os.path.exists("text.txt"):
         with open("text.txt", "r") as f:
             raw_text = f.read()
+            raw_text = raw_text * 10
     else:
         raw_text = "high performance computing " * 80000 
 
@@ -305,47 +296,43 @@ if __name__ == "__main__":
     print("EJECUTANDO BENCHMARK INTEGRAL CON CUPY Y MÉTRICAS")
     print("="*70 + "\n")
 
-    all_metrics = []
+    all_rows = []
 
     # 1. Python Puro
     with ResourceTracker() as tracker:
-        t_total, t_avg = CDNormal(num_text, num_key, REPETITION)
-    m = tracker.get_metrics_dict("PYTHON PURO", t_total, t_avg)
-    tracker.print_metrics(m)
-    all_metrics.append(m)
+        times_normal = CDNormal(num_text, num_key, REPETITION)
+    tracker.print_summary_metrics("PYTHON PURO", times_normal)
+    all_rows.extend(tracker.get_iteration_rows("PYTHON PURO", times_normal))
 
     # Inicializar Ray
     ray.init(num_cpus=NUM_CORES, num_gpus=1, logging_level=50)
 
     # 2. Ray Solo CPU
     with ResourceTracker() as tracker:
-        t_total, t_avg = CDRaySolo_CPU(num_text, num_key, REPETITION)
-    m = tracker.get_metrics_dict("RAY SOLO CPU", t_total, t_avg)
-    tracker.print_metrics(m)
-    all_metrics.append(m)
+        times_ray_cpu = CDRaySolo_CPU(num_text, num_key, REPETITION)
+    tracker.print_summary_metrics("RAY SOLO CPU", times_ray_cpu)
+    all_rows.extend(tracker.get_iteration_rows("RAY SOLO CPU", times_ray_cpu))
 
     # 3. Ray + NumPy CPU
     with ResourceTracker() as tracker:
-        t_total, t_avg = CDRayNumpy_CPU(num_text, num_key, REPETITION)
-    m = tracker.get_metrics_dict("RAY + NUMPY CPU", t_total, t_avg)
-    tracker.print_metrics(m)
-    all_metrics.append(m)
+        times_ray_np = CDRayNumpy_CPU(num_text, num_key, REPETITION)
+    tracker.print_summary_metrics("RAY + NUMPY CPU", times_ray_np)
+    all_rows.extend(tracker.get_iteration_rows("RAY + NUMPY CPU", times_ray_np))
 
     # 4. Ray + CuPy GPU
     with ResourceTracker() as tracker:
-        t_total, t_avg = CDRayCupy_GPU(num_text, num_key, REPETITION)
-    m = tracker.get_metrics_dict("RAY + CUPY GPU", t_total, t_avg)
-    tracker.print_metrics(m)
-    all_metrics.append(m)
+        times_ray_cp = CDRayCupy_GPU(num_text, num_key, REPETITION)
+    tracker.print_summary_metrics("RAY + CUPY GPU", times_ray_cp)
+    all_rows.extend(tracker.get_iteration_rows("RAY + CUPY GPU", times_ray_cp))
     
     # --- Guardar a CSV ---
     csv_path = "/app/output/metrics.csv"
-    keys = all_metrics[0].keys()
+    keys = all_rows[0].keys()
     with open(csv_path, 'w', newline='') as output_file:
         dict_writer = csv.DictWriter(output_file, fieldnames=keys)
         dict_writer.writeheader()
-        dict_writer.writerows(all_metrics)
+        dict_writer.writerows(all_rows)
         
-    print(f"\n[INFO] Métricas guardadas exitosamente en: {csv_path}")
+    print(f"\n[INFO] Datos detallados guardados en: {csv_path}")
     print("=" * 70)
     ray.shutdown()

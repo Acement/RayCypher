@@ -21,11 +21,13 @@ RUN pip install --no-cache-dir \
     codecarbon==2.4.2 \
     psutil==5.9.8 \
     pynvml==11.5.0 \
-    matplotlib==3.8.4
+    matplotlib==3.8.4 \
+    pandas==2.2.2
 
 COPY cypher_ray.py /app/cypher_ray.py
+COPY plot_metrics.py /app/plot_metrics.py
 COPY text.txt /app/text.txt
 
 RUN mkdir -p /app/output
 
-CMD ["python", "-m", "cProfile", "-o", "/app/output/profile.prof", "cypher_ray.py"]
+CMD ["sh", "-x", "-c", "python cypher_ray.py && python plot_metrics.py"]
