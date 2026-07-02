@@ -12,6 +12,7 @@ LEN_ALPHABET = 26
 REPETITION = 20
 NUM_CORES = 4
 
+# Genera datos de uso de recursos
 class ResourceTracker:
     def __init__(self):
         self.emissions_tracker = EmissionsTracker(log_level='ERROR', save_to_file=False)
@@ -70,7 +71,7 @@ class ResourceTracker:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return total_cpu / NUM_CORES
-
+    # Genera los datos guardados en el .csv para generar graficos
     def get_iteration_rows(self, name, time_list):
         rows = []
         for idx, t in enumerate(time_list):
@@ -86,6 +87,7 @@ class ResourceTracker:
             })
         return rows
 
+    # Muestra un resumen de los datos en la terminal
     def print_summary_metrics(self, name, time_list):
         t_total = sum(time_list)
         t_avg = t_total / len(time_list) if time_list else 0
@@ -101,7 +103,7 @@ class ResourceTracker:
         print("-" * 50)
 
 
-# --- Funciones de utilidad ---
+# Funciones de utilidad
 def toLowerCase(text):
     return text.lower()
 
@@ -110,7 +112,7 @@ def textToNum(text):
     return [ord(char) - base if char != ' ' else -65 for char in text]
 
 
-# --- 1. Vigenère Puro ---
+# 1. Vigenère Puro
 def CDNormal(text, key, rep):
     total_time = []
     for _ in range(rep):
@@ -136,7 +138,8 @@ def CDNormal(text, key, rep):
     return total_time
 
 
-# --- 2. Vigenère con Ray Puro + CPU ---
+# 2. Vigenère con Ray Puro + CPU
+## Hace el cifrado y descifrado
 @ray.remote(num_cpus=4)
 def cypher_chunk_ray_CPU(chunk, start_key_idx, key):
     cypher_text = []
@@ -149,6 +152,7 @@ def cypher_chunk_ray_CPU(chunk, start_key_idx, key):
             key_count = (key_count + 1) % len(key)
     return cypher_text, key_count
 
+## Hace el descifrado
 @ray.remote(num_cpus=4)
 def decypher_chunk_ray_CPU(chunk, start_key_idx, key):
     decypher_text = []
@@ -161,6 +165,7 @@ def decypher_chunk_ray_CPU(chunk, start_key_idx, key):
             key_count = (key_count + 1) % len(key)
     return decypher_text, key_count
 
+## Genera y manda el texto en chunks a los workers de Ray
 def CDRaySolo_CPU(text, key, rep):
     chunk_size = (len(text) + NUM_CORES - 1) // NUM_CORES
     valid_counts = []
@@ -196,7 +201,8 @@ def CDRaySolo_CPU(text, key, rep):
     return total_time
 
 
-# --- 3. Vigenère con Ray + NumPy + CPU ---
+# 3. Vigenère con Ray + NumPy + CPU
+## Cifra y descifra los datos
 @ray.remote(num_cpus=4)
 def process_chunk_numpy_CPU(text_np_chunk, aligned_key_chunk, mask_chunk, mode="cypher"):
     result = text_np_chunk.copy()
@@ -206,6 +212,7 @@ def process_chunk_numpy_CPU(text_np_chunk, aligned_key_chunk, mask_chunk, mode="
         result[mask_chunk] = (text_np_chunk[mask_chunk] - aligned_key_chunk[mask_chunk]) % LEN_ALPHABET
     return result
 
+## Genera y manda los chuncks al worker de Ray
 def CDRayNumpy_CPU(text, key, rep):
     text_np = np.array(text)
     key_np = np.array(key)
@@ -243,7 +250,8 @@ def CDRayNumpy_CPU(text, key, rep):
     return total_time
 
 
-# --- 4.Vigenère con Ray + CuPy + GPU ---
+# 4.Vigenère con Ray + CuPy + GPU
+## Cifra y descifra los datos
 @ray.remote(num_gpus=1)
 def process_chunk_cupy_GPU(text_np, aligned_key, mask, mode="cypher"):
     text_cp = cp.asarray(text_np)
@@ -258,6 +266,7 @@ def process_chunk_cupy_GPU(text_np, aligned_key, mask, mode="cypher"):
         
     return cp.asnumpy(result)
 
+## Manda los datos para cifrar y descifrar sin separarlo en chunks
 def CDRayCupy_GPU(text, key, rep):
     text_np = np.array(text, dtype=np.int32)
     key_np = np.array(key, dtype=np.int32)
